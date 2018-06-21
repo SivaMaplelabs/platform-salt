@@ -7,11 +7,22 @@
 {% set pnda_graphite_port = 8013 %}
 {% set pnda_graphite_host = salt['pnda.get_hosts_for_role']('graphite')[0] %}
 
+{% set ldap_base_dn = pillar['security']['ldap_base_dn'] %}
+{% set ldap_server = pillar['security']['ldap_server'] %}
+{% if ldap_server %}
+{% set ldap_enable = true %}
+{% set grafana_login = 'ldapgrafana' %}
+{% set grafana_pass = 'ldapgrafana' %}
+{% else %}
+{% set ldap_enable = false %}
 {% set grafana_login = pillar['pnda']['user'] %}
 # Because grafana is checking for password length, we need a password of at least 8 characters
 # So, we double the password (if the pnda password is 'pnda' then the grafana password will be 'pndapnda'
 {% set grafana_pass = pillar['pnda']['password']*2 %}
 
+{% endif %}
+
+{% set grafana_pass = pillar['pnda']['password'] %}
 {% set datasources = [
     '{ "name": "PNDA OpenTSDB", "type": "opentsdb", "url": "http://localhost:4242", "access": "proxy", "basicAuth": false, "isDefault": true }',
     '{{ "name": "PNDA Graphite", "type": "graphite", "url": "http://{}:{}", "access": "proxy", "basicAuth": false, "isDefault": false }}'.format(pnda_graphite_host, pnda_graphite_port) ] %}
@@ -35,6 +46,7 @@ grafana-server_start:
     - watch:
       - pkg: grafana-server_pkg
 
+{% if not ldap_enable %}
 grafana-login_script_run:
   cmd.script:
     - name: salt://grafana/templates/grafana-user-setup.sh.tpl
@@ -45,6 +57,7 @@ grafana-login_script_run:
     - cwd: /
     - require:
       - service: grafana-server_start
+{% endif %}
 
 {% for ds in datasources %}
 grafana-create_datasources_{{ loop.index }}:
@@ -54,8 +67,6 @@ grafana-create_datasources_{{ loop.index }}:
         {{ grafana_login }} {{ grafana_pass }} 'http://localhost:3000' '{{ ds }}'
     - shell: /bin/bash
     - cwd: /
-    - require:
-      - cmd: grafana-login_script_run
 {% endfor %}
 
 {% for dash in dashboard_list %}
@@ -86,8 +97,21 @@ grafana-add_config:
     - source: salt://grafana/templates/grafana.ini.tpl
     - name: {{ grafana_config_dir }}/grafana.ini
     - template: jinja
-    - defaults:
+    - context:
         haproxy_service: {{ haproxy_service }}
+        ldap_enable: {{ ldap_enable }}
+
+{% if ldap_enable %}
+grafana-ldap_config:
+  file.managed:
+    - source: salt://grafana/templates/ldap.toml.tpl
+    - name: {{ grafana_config_dir }}/ldap.toml
+    - template: jinja
+    - context:
+        ldap_host: {{ ldap_server }}
+        ldap_bind_dn: "cn=%s,dc={{ ldap_base_dn }}"
+        ldap_search_base_dns: "dc={{ ldap_base_dn }}"
+{% endif %}
 
 grafana-systemd:
   file.managed:
